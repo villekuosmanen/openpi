@@ -12,6 +12,7 @@ else
     docker buildx build \
         --platform "linux/${ARCH}" \
         -t "$IMAGE_NAME" \
+        --load \
         -f "${SCRIPT_DIR}/Dockerfile" \
         "$REPO_DIR"
 fi

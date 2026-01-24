@@ -28,11 +28,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync && \
     uv pip install -e .
 
-# Install decord into the uv environment (source for arm64, pip for amd64)
+# Install decord into the uv environment (source for arm64, pip for amd64).
+# Arm64 fix: patch FFmpeg includes + AVCodec constness to match newer FFmpeg headers.
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
         git clone --recursive https://github.com/dmlc/decord.git && \
         cd decord && \
+        sed -i 's/#include <libavcodec\/avcodec.h>/#include <libavcodec\/avcodec.h>\n#include <libavcodec\/bsf.h>/' src/video/ffmpeg/ffmpeg_common.h && \
+        sed -i 's/AVCodec \*dec/const AVCodec \*dec/g' src/video/video_reader.cc && \
         mkdir build && cd build && \
         cmake .. -DUSE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release && \
         make -j$(nproc) && \
