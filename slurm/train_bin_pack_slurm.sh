@@ -20,7 +20,7 @@ home_dir="/home/u5dm/pravsels.u5dm"
 scratch_dir="/scratch/u5dm/pravsels.u5dm"
 repo_dir="${home_dir}/openpi"
 data_dir="${scratch_dir}/openpi"
-container="${data_dir}/container/openpi_amd64.sif"
+container="${data_dir}/container/openpi_arm64.sif"
 HF_CACHE="${scratch_dir}/huggingface_cache"
 
 # Training config
