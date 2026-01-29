@@ -46,13 +46,14 @@ EXPORT_VARS="${EXPORT_VARS} && export WANDB_MODE=offline"
 EXPORT_VARS="${EXPORT_VARS} && export WANDB_ENTITY=pravsels"
 EXPORT_VARS="${EXPORT_VARS} && export OPENPI_DATA_HOME=${data_dir}"
 EXPORT_VARS="${EXPORT_VARS} && export UV_PROJECT_ENVIRONMENT=${data_dir}/.venv"
+EXPORT_VARS="${EXPORT_VARS} && export CUDA_VISIBLE_DEVICES=0,1,2"
 
 echo "Running training command..."
 echo "Command: ${TRAIN_CMD}"
 echo ""
 
 set +e
-srun --ntasks=1 --gpus-per-task=4 --cpu-bind=cores \
+srun --ntasks=1 --gpus-per-task=3 --cpu-bind=cores \
 apptainer exec --nv \
     --pwd "${repo_dir}" \
     --bind "${scratch_dir}:${scratch_dir}" \
