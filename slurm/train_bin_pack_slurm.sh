@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=pi05_bin_pack_delta
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:4
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=1-00:00:00
 #SBATCH --cpus-per-task=24
@@ -25,7 +25,7 @@ HF_CACHE="${scratch_dir}/huggingface_cache"
 
 # Training config
 CONFIG_NAME="pi05_bin_pack_coffee_capsules_delta"
-EXP_NAME="${1:-bin_pack_run}"
+EXP_NAME="${1:-${CONFIG_NAME}}"
 
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
 
@@ -52,7 +52,7 @@ echo "Command: ${TRAIN_CMD}"
 echo ""
 
 set +e
-srun --ntasks=1 --gpus-per-task=1 --cpu-bind=cores \
+srun --ntasks=1 --gpus-per-task=4 --cpu-bind=cores \
 apptainer exec --nv \
     --pwd "${repo_dir}" \
     --bind "${scratch_dir}:${scratch_dir}" \
