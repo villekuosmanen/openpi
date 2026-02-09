@@ -10,6 +10,7 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 import etils.epath as epath
 import flax.nnx as nnx
+import numpy as np
 from typing_extensions import override
 import tyro
 
@@ -402,25 +403,73 @@ class LeRobotBinPackDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # BinPackInputs converts EEF orientation from RPY (3) to rot6d (6),
+        # so (pos(7) + eef(7)) becomes (pos(7) + eef(10)) = 17 dims.
+        _ROT6D_SLICE = slice(10, 16)  # indices of rot6d inside the 17D state/action vector
+
         data_transforms = _transforms.Group(
             inputs=[bin_pack_policy.BinPackInputs()],
-            outputs=[bin_pack_policy.BinPackOutputs()],
+            # Slice to the 17D "semantic" action, then decode rot6d back to RPY for downstream consumers.
+            outputs=[bin_pack_policy.BinPackOutputs(action_dim=17, output_rpy=True)],
         )
         if self.use_delta_actions:
+            # If mask is not provided, default to delta-ing joints + xyz + gripper, but keep rot6d absolute.
+            # (Subtracting rot6d vectors is not a valid relative-rotation representation.)
+            delta_action_mask = self.delta_action_mask
+            if delta_action_mask is None:
+                delta_action_mask = tuple([True] * 10 + [False] * 6 + [True])  # 17 dims
             output_transforms = []
             if not self.output_delta_actions:
-                output_transforms.append(_transforms.AbsoluteActionsFromState(self.delta_action_mask))
+                output_transforms.append(_transforms.AbsoluteActionsFromState(delta_action_mask))
             data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActionsFromState(self.delta_action_mask)],
+                inputs=[_transforms.DeltaActionsFromState(delta_action_mask)],
                 outputs=output_transforms,
             )
+
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         base_config = self.create_base_config(assets_dirs, model_config)
+
+        # Match TRI LBM guidance for 6D rotation: do not normalize rot6d components (they already live in [-1, 1]).
+        # We achieve this by overriding the normalization stats so quantile normalization becomes identity
+        # (q01=-1, q99=+1) and z-score normalization becomes identity (mean=0, std=1) for those dims.
+        def _set_rot6d_identity(stats: _transforms.NormStats) -> _transforms.NormStats:
+            mean = np.array(stats.mean, copy=True)
+            std = np.array(stats.std, copy=True)
+            if mean.shape[-1] < _ROT6D_SLICE.stop or std.shape[-1] < _ROT6D_SLICE.stop:
+                raise ValueError(
+                    "Bin-pack rot6d identity normalization expects at least 17D stats "
+                    f"(got mean {mean.shape}, std {std.shape}). "
+                    "Regenerate norm stats after enabling rot6d encoding."
+                )
+            mean[..., _ROT6D_SLICE] = 0.0
+            std[..., _ROT6D_SLICE] = 1.0
+            q01 = None if stats.q01 is None else np.array(stats.q01, copy=True)
+            q99 = None if stats.q99 is None else np.array(stats.q99, copy=True)
+            if q01 is not None:
+                q01[..., _ROT6D_SLICE] = -1.0
+            if q99 is not None:
+                q99[..., _ROT6D_SLICE] = 1.0
+            return _normalize.NormStats(mean=mean, std=std, q01=q01, q99=q99)
+
+        patched_norm_stats = base_config.norm_stats
+        if patched_norm_stats is not None:
+            patched_norm_stats = dict(patched_norm_stats)
+            if "state" in patched_norm_stats:
+                patched_norm_stats["state"] = _set_rot6d_identity(patched_norm_stats["state"])
+            if "actions" in patched_norm_stats:
+                patched_norm_stats["actions"] = _set_rot6d_identity(patched_norm_stats["actions"])
+
+        patched_per_ts = base_config.per_timestep_action_norm_stats
+        if patched_per_ts is not None:
+            patched_per_ts = _set_rot6d_identity(patched_per_ts)
+
         use_per_timestep_action_norm = base_config.use_per_timestep_action_norm
         if self.use_delta_actions and use_per_timestep_action_norm is None:
             use_per_timestep_action_norm = True
         return dataclasses.replace(
             base_config,
+            norm_stats=patched_norm_stats,
+            per_timestep_action_norm_stats=patched_per_ts,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=("action.pos", "action.eef_pose"),
