@@ -30,11 +30,12 @@ XDG_CONFIG_HOME="${scratch_dir}/.config"
 
 # Training config
 CONFIG_NAME="pi05_bin_pack_coffee_capsules_delta"
-EXP_NAME="${1:-${CONFIG_NAME}}"
+EXP_NAME="10_datasets"
 
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
+ASSETS_DIR="${CHECKPOINT_DIR}/assets"
 
-mkdir -p "${HF_CACHE}" "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_CONFIG_DIR}" "${XDG_CACHE_HOME}" "${XDG_CONFIG_HOME}" "${data_dir}/checkpoints" "${data_dir}/assets" "${data_dir}/weights" "${data_dir}/.venv"
+mkdir -p "${HF_CACHE}" "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_CONFIG_DIR}" "${XDG_CACHE_HOME}" "${XDG_CONFIG_HOME}" "${data_dir}/checkpoints" "${data_dir}/assets" "${data_dir}/weights" "${data_dir}/.venv" "${ASSETS_DIR}"
 
 start_time="$(date -Is --utc)"
 echo "===================================="
@@ -43,8 +44,10 @@ echo "Node: ${SLURM_NODELIST}"
 echo "Started (UTC): ${start_time}"
 echo "===================================="
 
-# Training command
-TRAIN_CMD="uv run scripts/train.py ${CONFIG_NAME} --exp-name=${EXP_NAME} --resume"
+# Training commands
+COMPUTE_VALID_INDICES_CMD="uv run scripts/compute_valid_indices.py ${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
+COMPUTE_NORM_STATS_CMD="uv run scripts/compute_norm_stats_per_timestep.py ${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
+TRAIN_CMD="uv run scripts/train.py ${CONFIG_NAME} --exp-name=${EXP_NAME} --assets-base-dir=${ASSETS_DIR} --resume"
 
 EXPORT_VARS="export PYTHONUNBUFFERED=1"
 EXPORT_VARS="${EXPORT_VARS} && export WANDB_MODE=offline"
@@ -58,6 +61,12 @@ EXPORT_VARS="${EXPORT_VARS} && export OPENPI_DATA_HOME=${data_dir}"
 EXPORT_VARS="${EXPORT_VARS} && export UV_PROJECT_ENVIRONMENT=${data_dir}/.venv"
 EXPORT_VARS="${EXPORT_VARS} && export CUDA_VISIBLE_DEVICES=0,1,2"
 
+echo "Running valid-index precompute..."
+echo "Command: ${COMPUTE_VALID_INDICES_CMD}"
+echo ""
+echo "Running normalization precompute..."
+echo "Command: ${COMPUTE_NORM_STATS_CMD}"
+echo ""
 echo "Running training command..."
 echo "Command: ${TRAIN_CMD}"
 echo ""
@@ -73,7 +82,7 @@ apptainer exec --nv \
     --bind "${HF_CACHE}:/root/.cache/huggingface" \
     --env "HF_HOME=/root/.cache/huggingface" \
     "${container}" \
-    bash -c "${EXPORT_VARS} && ${TRAIN_CMD}"
+    bash -c "${EXPORT_VARS} && ${COMPUTE_VALID_INDICES_CMD} && ${COMPUTE_NORM_STATS_CMD} && ${TRAIN_CMD}"
 EXIT_CODE=$?
 set -e
 
