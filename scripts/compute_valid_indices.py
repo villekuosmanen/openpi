@@ -24,10 +24,13 @@ def main(
     config_name: str, assets_base_dir: str | None = None, assets_dir: str | None = None
 ) -> None:
     config = _config.get_config(config_name)
-    if assets_dir is not None:
-        config = dataclasses.replace(config, assets_dir=assets_dir)
+    if assets_dir is None:
+        raise ValueError("--assets-dir is required.")
+    if pathlib.Path(assets_dir).name != "assets":
+        raise ValueError(f"--assets-dir must end with /assets (got: {assets_dir})")
     if assets_base_dir is not None:
-        config = dataclasses.replace(config, assets_base_dir=assets_base_dir)
+        raise ValueError("--assets-base-dir is not supported; use --assets-dir instead.")
+    config = dataclasses.replace(config, assets_dir=assets_dir)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.repo_id is None:
@@ -53,7 +56,7 @@ def main(
             valid.append(i)
     logging.info("Computed %d valid indices (of %d total).", len(valid), n)
 
-    output_dir = pathlib.Path(config.assets_dirs) / data_config.repo_id
+    output_dir = pathlib.Path(config.assets_dirs)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / _data_loader.VALID_INDICES_FILENAME
     output_path.write_text(",".join(str(i) for i in valid))

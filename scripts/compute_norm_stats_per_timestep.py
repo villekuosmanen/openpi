@@ -124,10 +124,13 @@ def main(
     assets_dir: str | None = None,
 ):
     config = _config.get_config(config_name)
-    if assets_dir is not None:
-        config = dataclasses.replace(config, assets_dir=assets_dir)
+    if assets_dir is None:
+        raise ValueError("--assets-dir is required.")
+    if pathlib.Path(assets_dir).name != "assets":
+        raise ValueError(f"--assets-dir must end with /assets (got: {assets_dir})")
     if assets_base_dir is not None:
-        config = dataclasses.replace(config, assets_base_dir=assets_base_dir)
+        raise ValueError("--assets-base-dir is not supported; use --assets-dir instead.")
+    config = dataclasses.replace(config, assets_dir=assets_dir)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -151,7 +154,7 @@ def main(
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
     per_timestep_action_stats = _stack_norm_stats([stats.get_statistics() for stats in per_timestep_stats])
 
-    output_path = config.assets_dirs / data_config.repo_id
+    output_path = config.assets_dirs
     print(f"Writing global stats to: {output_path}")
     normalize.save(output_path, norm_stats)
     print(f"Writing per-timestep action stats to: {output_path}")

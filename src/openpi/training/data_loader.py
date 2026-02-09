@@ -291,6 +291,8 @@ def create_data_loader(
         skip_norm_stats: Whether to skip data normalization.
         framework: The framework to use ("jax" or "pytorch").
     """
+    if config.assets_dir is None:
+        raise ValueError("assets_dir is required; set --assets-dir to an exp-specific assets path.")
     data_config = config.data.create(config.assets_dirs, config.model)
     logging.info(f"data_config: {data_config}")
 
@@ -307,7 +309,7 @@ def create_data_loader(
         )
     valid_indices_path = None
     if data_config.repo_id not in (None, "fake"):
-        p = pathlib.Path(config.assets_dirs) / data_config.repo_id / VALID_INDICES_FILENAME
+        p = pathlib.Path(config.assets_dirs) / VALID_INDICES_FILENAME
         if p.exists():
             valid_indices_path = p
         else:

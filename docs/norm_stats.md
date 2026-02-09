@@ -18,9 +18,9 @@ To generate these files, use `scripts/compute_norm_stats_per_timestep.py`.
 
 ## Experiment-specific assets
 
-By default, normalization stats (and related assets like `valid_indices.txt`) are stored under the
-config assets directory: `assets/<config name>/<repo_id>/...`. If you want these files to be
-experiment-specific, pass a custom assets directory when running the scripts and training.
+Normalization stats (and related assets like `valid_indices.txt`) are stored directly under the
+assets directory you pass. `--assets-dir` is required for the compute scripts and training, and
+it must end with `/assets`.
 
 Example:
 

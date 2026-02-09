@@ -35,6 +35,15 @@ EXP_NAME="10_datasets"
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
 ASSETS_DIR="${CHECKPOINT_DIR}/assets"
 
+if [ -z "${ASSETS_DIR}" ]; then
+    echo "ERROR: ASSETS_DIR is empty; refusing to run."
+    exit 1
+fi
+if [[ "${ASSETS_DIR}" != */assets ]]; then
+    echo "ERROR: ASSETS_DIR must end with /assets (got: ${ASSETS_DIR})"
+    exit 1
+fi
+
 mkdir -p "${HF_CACHE}" "${WANDB_DIR}" "${WANDB_CACHE_DIR}" "${WANDB_CONFIG_DIR}" "${XDG_CACHE_HOME}" "${XDG_CONFIG_HOME}" "${data_dir}/checkpoints" "${data_dir}/assets" "${data_dir}/weights" "${data_dir}/.venv" "${ASSETS_DIR}"
 
 start_time="$(date -Is --utc)"
