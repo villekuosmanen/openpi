@@ -8,6 +8,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 docker run --gpus all --rm -it \
     -v "${REPO_DIR}:/workspace/repo" \
+    -v "${REPO_DIR}/.venv:/.venv" \
     -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
     -v "${HOME}/.cache/openpi:/openpi_assets" \
     -e "HF_HOME=/root/.cache/huggingface" \

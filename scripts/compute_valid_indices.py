@@ -5,6 +5,7 @@ and writes comma-separated indices to config.assets_dirs / data_config.repo_id /
 Training then loads this file instead of recomputing indices at startup.
 """
 
+import dataclasses
 import logging
 import pathlib
 
@@ -19,8 +20,10 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 
 
-def main(config_name: str) -> None:
+def main(config_name: str, assets_base_dir: str | None = None) -> None:
     config = _config.get_config(config_name)
+    if assets_base_dir is not None:
+        config = dataclasses.replace(config, assets_base_dir=assets_base_dir)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.repo_id is None:

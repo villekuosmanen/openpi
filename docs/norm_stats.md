@@ -16,6 +16,21 @@ State normalization always remains global.
 
 To generate these files, use `scripts/compute_norm_stats_per_timestep.py`.
 
+## Experiment-specific assets
+
+By default, normalization stats (and related assets like `valid_indices.txt`) are stored under the
+config assets directory: `assets/<config name>/<repo_id>/...`. If you want these files to be
+experiment-specific, pass a custom assets base directory when running the scripts and training.
+
+Example:
+
+```bash
+ASSETS_DIR="/scratch/.../checkpoints/<CONFIG_NAME>/<EXP_NAME>/assets"
+uv run scripts/compute_valid_indices.py <CONFIG_NAME> --assets-base-dir="${ASSETS_DIR}"
+uv run scripts/compute_norm_stats_per_timestep.py <CONFIG_NAME> --assets-base-dir="${ASSETS_DIR}"
+uv run scripts/train.py <CONFIG_NAME> --exp-name=<EXP_NAME> --assets-base-dir="${ASSETS_DIR}"
+```
+
 ## Reloading normalization statistics
 
 When you fine-tune one of our models on a new dataset, you need to decide whether to (A) reuse existing normalization statistics or (B) compute new statistics over your new training data. Which option is better for you depends on the similarity of your robot and task to the robot and task distribution in the pre-training dataset. Below, we list all the available pre-training normalization statistics for each model.

@@ -1,5 +1,6 @@
 from collections.abc import Iterator, Sequence
 import logging
+import math
 import multiprocessing
 import os
 import pathlib
@@ -7,11 +8,11 @@ import typing
 from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import tqdm_loggable.auto as tqdm
-import math
-import random
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import torch
 try:
     import lerobot.datasets.lerobot_dataset as lerobot_dataset
 except ModuleNotFoundError:
@@ -34,8 +35,6 @@ def _coerce_task_mapping(tasks) -> dict[int, str]:
     if isinstance(tasks, (list, tuple)):
         return {idx: str(task) for idx, task in enumerate(tasks)}
     return {}
-import numpy as np
-import torch
 
 import openpi.models.model as _model
 import openpi.shared.normalize as _normalize
@@ -619,51 +618,58 @@ class DataLoaderImpl(DataLoader):
             yield _model.Observation.from_dict(batch), batch["actions"]
 
 
-VALID_INDICES_FILENAME = "valid_indices.txt"
-
-
-def _load_valid_indices(path: pathlib.Path | str) -> list[int]:
-    """Load comma-separated valid indices from a text file."""
-    path = pathlib.Path(path)
-    text = path.read_text().strip()
-    if not text:
-        return []
-    return [int(x) for x in text.split(",")]
-
-
-class FilteredSampler(torch.utils.data.Sampler):
+class FilteredSampler(torch.utils.data.Sampler[int]):
     """Sampler that samples only from a precomputed list of valid indices."""
 
-    def __init__(self, valid_indices: list[int], shuffle: bool = True):
+    def __init__(self, valid_indices: list[int], *, shuffle: bool = True, seed: int = 0):
         self.valid_indices = valid_indices
         self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
     def __iter__(self):
         indices = self.valid_indices.copy()
         if self.shuffle:
-            random.shuffle(indices)
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            perm = torch.randperm(len(indices), generator=generator).tolist()
+            indices = [indices[i] for i in perm]
         return iter(indices)
 
     def __len__(self):
         return len(self.valid_indices)
 
 
-class FilteredDistributedSampler(torch.utils.data.Sampler):
-    """DistributedSampler that only samples from a precomputed list of valid indices."""
+class FilteredDistributedSampler(torch.utils.data.Sampler[int]):
+    """Distributed sampler that only samples from a precomputed list of valid indices."""
 
     def __init__(
         self,
         valid_indices: list[int],
+        *,
         num_replicas: int | None = None,
         rank: int | None = None,
         shuffle: bool = True,
         drop_last: bool = True,
+        seed: int = 0,
     ):
         self.valid_indices = valid_indices
         self.shuffle = shuffle
         self.drop_last = drop_last
-        self.num_replicas = num_replicas or torch.distributed.get_world_size()
-        self.rank = rank or torch.distributed.get_rank()
+        self.seed = seed
+        if num_replicas is None:
+            self.num_replicas = (
+                torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            )
+        else:
+            self.num_replicas = num_replicas
+        if rank is None:
+            self.rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        else:
+            self.rank = rank
         self.epoch = 0
 
         if self.drop_last and len(self.valid_indices) % self.num_replicas != 0:
@@ -674,29 +680,28 @@ class FilteredDistributedSampler(torch.utils.data.Sampler):
             self.num_samples = math.ceil(len(self.valid_indices) / self.num_replicas)
         self.total_size = self.num_samples * self.num_replicas
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
     def __iter__(self):
-        # Deterministic shuffle based on epoch (same across all ranks)
         if self.shuffle:
-            g = torch.Generator()
-            g.manual_seed(self.epoch)
-            perm = torch.randperm(len(self.valid_indices), generator=g).tolist()
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            perm = torch.randperm(len(self.valid_indices), generator=generator).tolist()
             indices = [self.valid_indices[i] for i in perm]
         else:
             indices = self.valid_indices.copy()
 
-        # Pad or truncate to total_size
         if self.drop_last:
-            indices = indices[:self.total_size]
+            indices = indices[: self.total_size]
         else:
             padding = self.total_size - len(indices)
             indices += indices[:padding]
 
-        # Subsample for this rank
-        indices = indices[self.rank:self.total_size:self.num_replicas]
+        indices = indices[self.rank : self.total_size : self.num_replicas]
         assert len(indices) == self.num_samples
 
         return iter(indices)
 
     def __len__(self):
         return self.num_samples
-

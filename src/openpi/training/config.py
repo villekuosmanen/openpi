@@ -838,7 +838,20 @@ _CONFIGS = [
         name="pi05_bin_pack_coffee_capsules",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
         data=LeRobotBinPackDataConfig(
-            repo_id="[villekuosmanen/bin_pick_pack_coffee_capsules, villekuosmanen/bin_pick_pack_coffee_capsules_continuous, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.0.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.1.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.2.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.3.1, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.4.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.1, villekuosmanen/free_play_bin_pick_pack_coffee_capsules]",
+            repo_id=(
+                "["
+                "villekuosmanen/bin_pick_pack_coffee_capsules, "
+                "villekuosmanen/bin_pick_pack_coffee_capsules_continuous, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.0.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.1.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.2.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.3.1, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.4.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.1, "
+                "villekuosmanen/free_play_bin_pick_pack_coffee_capsules"
+                "]"
+            ),
             base_config=DataConfig(prompt_from_task=True),
         ),
         batch_size=36,
@@ -857,12 +870,25 @@ _CONFIGS = [
         name="pi05_bin_pack_coffee_capsules_delta",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
         data=LeRobotBinPackDataConfig(
-            repo_id="[villekuosmanen/bin_pick_pack_coffee_capsules, villekuosmanen/bin_pick_pack_coffee_capsules_continuous, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.0.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.1.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.2.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.3.1, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.4.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.0, villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.1, villekuosmanen/free_play_bin_pick_pack_coffee_capsules]",
+            repo_id=(
+                "["
+                "villekuosmanen/bin_pick_pack_coffee_capsules, "
+                "villekuosmanen/bin_pick_pack_coffee_capsules_continuous, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.0.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.1.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.2.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.3.1, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.4.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.0, "
+                "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.1, "
+                "villekuosmanen/free_play_bin_pick_pack_coffee_capsules"
+                "]"
+            ),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_actions=True,
             output_delta_actions=True,
         ),
-        batch_size=1,
+        batch_size=36,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -871,7 +897,7 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
         num_train_steps=30_000,
     ),
     #

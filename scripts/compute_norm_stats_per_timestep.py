@@ -7,6 +7,7 @@ stats saved to a parallel file.
 
 from __future__ import annotations
 
+import dataclasses
 import numpy as np
 import tqdm
 import tyro
@@ -116,8 +117,10 @@ def _update_per_timestep_stats(
         stats_by_timestep[t].update(actions[:, t, :])
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(config_name: str, max_frames: int | None = None, assets_base_dir: str | None = None):
     config = _config.get_config(config_name)
+    if assets_base_dir is not None:
+        config = dataclasses.replace(config, assets_base_dir=assets_base_dir)
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
