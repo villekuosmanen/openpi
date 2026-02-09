@@ -45,8 +45,8 @@ echo "Started (UTC): ${start_time}"
 echo "===================================="
 
 # Training commands
-COMPUTE_VALID_INDICES_CMD="uv run scripts/compute_valid_indices.py ${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
-COMPUTE_NORM_STATS_CMD="uv run scripts/compute_norm_stats_per_timestep.py ${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
+COMPUTE_VALID_INDICES_CMD="uv run scripts/compute_valid_indices.py --config-name=${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
+COMPUTE_NORM_STATS_CMD="uv run scripts/compute_norm_stats_per_timestep.py --config-name=${CONFIG_NAME} --assets-base-dir=${ASSETS_DIR}"
 TRAIN_CMD="uv run scripts/train.py ${CONFIG_NAME} --exp-name=${EXP_NAME} --assets-base-dir=${ASSETS_DIR} --resume"
 
 EXPORT_VARS="export PYTHONUNBUFFERED=1"
