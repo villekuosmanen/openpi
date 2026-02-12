@@ -217,8 +217,13 @@ class Pi0(_model.BaseModel):
         # Mask out padded actions at episode boundaries so the model doesn't
         # learn to predict the repeated last action (which causes freezing).
         if observation.action_is_pad is not None:
-            # action_is_pad is True for padded steps; zero out their loss.
-            per_step_loss = per_step_loss * (~observation.action_is_pad)
+            # mask is 1 for real actions, 0 for padded actions.
+            mask = ~observation.action_is_pad
+            per_step_loss = per_step_loss * mask
+            # Rescale so that the downstream mean() produces the correct average over
+            # real steps only, not over all steps including the zeroed-out ones.
+            num_real = jnp.clip(mask.sum(axis=-1, keepdims=True), 1)
+            per_step_loss = per_step_loss * (mask.shape[-1] / num_real)
 
         return per_step_loss
 

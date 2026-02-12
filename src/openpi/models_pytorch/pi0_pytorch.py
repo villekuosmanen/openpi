@@ -377,9 +377,13 @@ class PI0Pytorch(nn.Module):
         # learn to predict the repeated last action (which causes freezing).
         action_is_pad = getattr(observation, "action_is_pad", None)
         if action_is_pad is not None:
-            # action_is_pad is [b, ah] bool; expand to [b, ah, 1] to broadcast over action dim.
-            pad_mask = (~action_is_pad).unsqueeze(-1).to(per_element_loss.dtype)
-            per_element_loss = per_element_loss * pad_mask
+            # mask is 1 for real actions, 0 for padded actions. Expand to [b, ah, 1] to broadcast.
+            mask = (~action_is_pad).unsqueeze(-1).to(per_element_loss.dtype)
+            per_element_loss = per_element_loss * mask
+            # Rescale so that the downstream .mean() produces the correct average over
+            # real steps only, not over all steps including the zeroed-out ones.
+            num_real = mask.sum(dim=1, keepdim=True).clamp(min=1)
+            per_element_loss = per_element_loss * (mask.shape[1] / num_real)
 
         return per_element_loss
 
