@@ -184,6 +184,16 @@ class BinPackInputs(transforms.DataTransformFn):
             action_eef = _eef_pose_rpy_to_rot6d(np.asarray(action_eef))
             inputs["actions"] = np.concatenate([action_pos, action_eef], axis=-1).astype(np.float32)
 
+        # Extract action_is_pad mask if available (from LeRobot episode padding).
+        # LeRobot may provide this under different keys depending on the dataset format.
+        action_is_pad = None
+        for pad_key in ("action_is_pad", "action.pos_is_pad", "action/pos_is_pad"):
+            if pad_key in data:
+                action_is_pad = np.asarray(data[pad_key]).astype(bool)
+                break
+        if action_is_pad is not None:
+            inputs["action_is_pad"] = action_is_pad
+
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
         elif "task" in data:

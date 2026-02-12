@@ -211,7 +211,16 @@ class Pi0(_model.BaseModel):
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        # Per-timestep MSE loss averaged over action dimension.
+        per_step_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+
+        # Mask out padded actions at episode boundaries so the model doesn't
+        # learn to predict the repeated last action (which causes freezing).
+        if observation.action_is_pad is not None:
+            # action_is_pad is True for padded steps; zero out their loss.
+            per_step_loss = per_step_loss * (~observation.action_is_pad)
+
+        return per_step_loss
 
     @override
     def sample_actions(

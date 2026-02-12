@@ -370,7 +370,18 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        # Per-element MSE loss [b, ah, ad].
+        per_element_loss = F.mse_loss(u_t, v_t, reduction="none")
+
+        # Mask out padded actions at episode boundaries so the model doesn't
+        # learn to predict the repeated last action (which causes freezing).
+        action_is_pad = getattr(observation, "action_is_pad", None)
+        if action_is_pad is not None:
+            # action_is_pad is [b, ah] bool; expand to [b, ah, 1] to broadcast over action dim.
+            pad_mask = (~action_is_pad).unsqueeze(-1).to(per_element_loss.dtype)
+            per_element_loss = per_element_loss * pad_mask
+
+        return per_element_loss
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
