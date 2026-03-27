@@ -552,35 +552,18 @@ class LeRobotARX5MultiTaskDataConfig(DataConfigFactory):
             if delta_action_mask is None:
                 # Delta joints, absolute grippers for bimanual: [J]*6 + [G] + [J]*6 + [G]
                 delta_action_mask = tuple([True] * 6 + [False] + [True] * 6 + [False])
+            # Use the FromState variants so the mask is clipped to
+            # min(mask_dim, state_dim, action_dim). This is critical at
+            # inference time: a single-arm robot sends 7-dim state while the
+            # mask is 14-dim; the FromState variants handle this gracefully
+            # instead of crashing on a shape mismatch.
             data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+                inputs=[_transforms.DeltaActionsFromState(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActionsFromState(delta_action_mask)],
             )
 
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         base_config = self.create_base_config(assets_dirs, model_config)
-
-        # Patch norm stats: agilex gripper dims need stats divided by 100
-        # since the data transform rescales cm→m before normalization.
-        patched_norm_stats = base_config.norm_stats
-        if patched_norm_stats is not None:
-            patched_norm_stats = dict(patched_norm_stats)
-            for key in ("state", "actions"):
-                if key in patched_norm_stats:
-                    stats = patched_norm_stats[key]
-                    mean = np.array(stats.mean, copy=True)
-                    std = np.array(stats.std, copy=True)
-                    q01 = None if stats.q01 is None else np.array(stats.q01, copy=True)
-                    q99 = None if stats.q99 is None else np.array(stats.q99, copy=True)
-                    # The data transform divides gripper dims by 100 before
-                    # these stats are applied, so the stats must also reflect
-                    # the scaled values. Since norm stats are computed WITH
-                    # the data transform applied, this is only needed if stats
-                    # were computed without the transform. Adding as a safety
-                    # measure — TODO: verify after computing norm stats.
-                    patched_norm_stats[key] = _normalize.NormStats(
-                        mean=mean, std=std, q01=q01, q99=q99,
-                    )
 
         use_per_timestep_action_norm = base_config.use_per_timestep_action_norm
         if self.use_delta_actions and use_per_timestep_action_norm is None:
@@ -588,7 +571,6 @@ class LeRobotARX5MultiTaskDataConfig(DataConfigFactory):
 
         return dataclasses.replace(
             base_config,
-            norm_stats=patched_norm_stats,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             # RoboCandyWrapper normalises action keys to "action" via key_rename_map
@@ -1477,8 +1459,7 @@ _CONFIGS = [
             # JSON listing 186 repo_ids; resolved against --assets-dir at runtime
             repo_id="training_mix_v1.json",
             base_config=DataConfig(prompt_from_task=True),
-            # TODO: enable delta actions once dim-mismatch handling is sorted
-            use_delta_actions=False,
+            use_delta_actions=True,
         ),
         batch_size=36,
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1491,6 +1472,55 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
         num_train_steps=100_000,
+        wandb_enabled=True,
+    ),
+    #
+    # ARX5 micro ablation configs (14-dataset subset).
+    # Both share the same dataset mix; they differ only in valid-index filtering.
+    # Norm stats are loaded from the baseline assets dir for both.
+    #
+    TrainConfig(
+        name="pi05_arx5_multitask_micro_baseline",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
+        data=LeRobotARX5MultiTaskDataConfig(
+            repo_id="training_mix_micro.json",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        batch_size=36,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        num_train_steps=20_000,
+        wandb_enabled=True,
+    ),
+    TrainConfig(
+        name="pi05_arx5_multitask_micro_advantaged",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
+        data=LeRobotARX5MultiTaskDataConfig(
+            repo_id="training_mix_micro.json",
+            # Load norm stats from the baseline dir (same dataset mix)
+            assets=AssetsConfig(assets_dir="./assets/pi05_arx5_multitask_micro_baseline"),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        batch_size=36,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        num_train_steps=20_000,
         wandb_enabled=True,
     ),
     #

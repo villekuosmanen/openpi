@@ -156,6 +156,22 @@ class FakeDataset(Dataset):
 
 
 @dataclasses.dataclass(frozen=True)
+class _InjectDatasetRepoId(_transforms.DataTransformFn):
+    """Map the integer ``dataset_index`` added by WrappedRobotDataset to the
+    human-readable ``dataset_repo_id`` string so downstream transforms can
+    branch on the source dataset."""
+
+    repo_index_to_id: dict[int, str]
+
+    def __call__(self, data: _transforms.DataDict) -> _transforms.DataDict:
+        ds_idx = data.get("dataset_index")
+        if ds_idx is not None:
+            idx = int(ds_idx)
+            data["dataset_repo_id"] = self.repo_index_to_id.get(idx, "")
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class _PromptFromSubtask(_transforms.DataTransformFn):
     """Use the subtask description as the language prompt when available.
 
@@ -214,6 +230,9 @@ def create_torch_dataset(
     dataset_meta = dataset.meta
 
     transforms = []
+
+    if hasattr(dataset, 'repo_index_to_id'):
+        transforms.append(_InjectDatasetRepoId(dict(dataset.repo_index_to_id)))
 
     if data_config.prompt_from_task:
         task_mapping = _coerce_task_mapping(dataset_meta.tasks)

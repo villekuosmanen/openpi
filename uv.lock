@@ -2835,7 +2835,7 @@ requires-dist = [
     { name = "polars", specifier = ">=1.30.0" },
     { name = "rewact-tools" },
     { name = "rich", specifier = ">=14.0.0" },
-    { name = "robocandywrapper", specifier = ">=0.2.11" },
+    { name = "robocandywrapper", specifier = ">=0.2.13" },
     { name = "sentencepiece", specifier = ">=0.2.0" },
     { name = "torch", specifier = "==2.7.1" },
     { name = "tqdm-loggable", specifier = ">=0.2" },
@@ -3879,17 +3879,18 @@ wheels = [
 
 [[package]]
 name = "robocandywrapper"
-version = "0.2.11"
+version = "0.2.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lerobot" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "rewact-tools" },
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/e3/68765fc49446f38061a7c8bdbeba2a3f7acc0c14ab5710f93f73ddd5dd99/robocandywrapper-0.2.11.tar.gz", hash = "sha256:f92f6b0670a3330a18a1f543c073ee343e3b7059aa024591d4936180e6768758", size = 55769, upload-time = "2026-03-20T23:15:08.212Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/ae/45e6a244f7150ee08f74af610cf7595424312db0838cf4e7c2f61b7cdf53/robocandywrapper-0.2.14.tar.gz", hash = "sha256:74b34d34026062f6ed626c95d4ddd84a88e031739f6a7c65fd94f4bbb7448b6f", size = 56056, upload-time = "2026-03-27T11:52:40.629Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/9d/c72aa6d4979302b80960c460d653a74f1b9cf2a60bba6858a39687f74577/robocandywrapper-0.2.11-py3-none-any.whl", hash = "sha256:7b52b84529bb35b5b7ff9607cb38ec7cbd11a125e1b35cc2264172f0f60656ab", size = 59429, upload-time = "2026-03-20T23:15:07.061Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/5e/eac1a2dce0e8486d9935b4d329ea3b7ba9fb2b0a7a80dab399e73bc341dc/robocandywrapper-0.2.14-py3-none-any.whl", hash = "sha256:36abf7c5204a887729fe2cf7b5b66583bc73c61808659cc0245fe405098cbba3", size = 59846, upload-time = "2026-03-27T11:52:39.799Z" },
 ]
 
 [[package]]

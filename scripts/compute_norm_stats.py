@@ -272,7 +272,7 @@ def main(
     else:
         norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    output_path = config.assets_dirs
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 

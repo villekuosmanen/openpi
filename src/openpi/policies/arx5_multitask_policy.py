@@ -2,7 +2,8 @@
 
 Handles:
 - Mixed camera configs (zero-fill + mask missing cameras)
-- Agilex gripper scaling (centimeters → meters for bimanual datasets)
+- Agilex gripper scaling (centimeters → meters) for ``villekuosmanen/agilex_*``
+  datasets only, gated on ``dataset_repo_id`` injected by the data loader
 - Action dim padding and masking (7→14 for single-arm)
 - Subtask-based prompting
 """
@@ -52,9 +53,16 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
     This transform:
       1. Maps images to model keys (base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb)
       2. Zero-fills missing cameras and sets image_mask=False
-      3. Scales agilex gripper values (cm→m) for 14-dim state/actions
+      3. Scales agilex gripper values (cm→m) only for datasets whose repo_id
+         matches ``agilex_repo_prefix``
       4. Passes through action_is_pad, prompt, subtask
     """
+
+    agilex_repo_prefix: str = "villekuosmanen/agilex_"
+
+    def _is_agilex(self, data: dict) -> bool:
+        repo_id = data.get("dataset_repo_id", "")
+        return isinstance(repo_id, str) and repo_id.startswith(self.agilex_repo_prefix)
 
     def __call__(self, data: dict) -> dict:
         global _LOGGED
@@ -118,8 +126,9 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
         ).astype(np.float32)
 
         orig_action_dim = state.shape[-1]
+        scale_gripper = self._is_agilex(data) and orig_action_dim == _BIMANUAL_ACTION_DIM
 
-        if orig_action_dim == _BIMANUAL_ACTION_DIM:
+        if scale_gripper:
             state = state.copy()
             for idx in _GRIPPER_INDICES_BIMANUAL:
                 state[..., idx] /= _GRIPPER_SCALE
@@ -144,7 +153,7 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
         if action_key is not None:
             raw = data.get(action_key) if action_key in data else flat.get(action_key)
             actions = np.asarray(raw).astype(np.float32)
-            if actions.shape[-1] == _BIMANUAL_ACTION_DIM:
+            if scale_gripper:
                 actions = actions.copy()
                 for idx in _GRIPPER_INDICES_BIMANUAL:
                     actions[..., idx] /= _GRIPPER_SCALE
@@ -157,22 +166,33 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
                 )
 
         # ── Passthrough fields ──────────────────────────────────────
-        all_keys = set(data.keys()) | set(flat.keys())
+        # Always emit consistent keys so JAX collation can stack samples
+        # from datasets with different morphologies.
+        action_is_pad = None
         for pad_key in ("action_is_pad", "action.pos_is_pad", "action/pos_is_pad"):
             if pad_key in data:
-                inputs["action_is_pad"] = np.asarray(data[pad_key]).astype(bool)
+                action_is_pad = np.asarray(data[pad_key]).astype(bool)
                 break
             elif pad_key in flat:
-                inputs["action_is_pad"] = np.asarray(flat[pad_key]).astype(bool)
+                action_is_pad = np.asarray(flat[pad_key]).astype(bool)
                 break
+        if action_is_pad is not None:
+            inputs["action_is_pad"] = action_is_pad
+        elif "actions" in inputs:
+            inputs["action_is_pad"] = np.zeros(inputs["actions"].shape[0], dtype=bool)
 
+        action_dim_mask = None
         for mask_key in ("action_dim_mask", "action.pos_dim_mask", "action/dim_mask"):
             if mask_key in data:
-                inputs["action_dim_mask"] = np.asarray(data[mask_key]).astype(bool)
+                action_dim_mask = np.asarray(data[mask_key]).astype(bool)
                 break
             elif mask_key in flat:
-                inputs["action_dim_mask"] = np.asarray(flat[mask_key]).astype(bool)
+                action_dim_mask = np.asarray(flat[mask_key]).astype(bool)
                 break
+        if action_dim_mask is not None:
+            inputs["action_dim_mask"] = action_dim_mask
+        else:
+            inputs["action_dim_mask"] = np.ones(orig_action_dim, dtype=bool)
 
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
@@ -180,7 +200,9 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
         if not _LOGGED:
             logging.info(
                 f"[arx5_multitask] state_dim={orig_action_dim}, "
+                f"gripper_scale={scale_gripper}, "
                 f"cameras={[k for k,v in image_masks.items() if v]}, "
+                f"repo_id={data.get('dataset_repo_id', 'N/A')}, "
                 f"prompt={str(data.get('prompt', ''))[:60]}"
             )
             _LOGGED = True
@@ -190,15 +212,20 @@ class ARX5MultiTaskInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class ARX5MultiTaskOutputs(transforms.DataTransformFn):
-    """Output transform: slice actions back to the original dimension."""
+    """Output transform: slice actions back to the original dimension.
+
+    Set ``apply_gripper_scale=True`` when deploying on an Agilex robot whose
+    driver expects gripper values in centimeters (the model outputs meters).
+    """
 
     action_dim: int = _BIMANUAL_ACTION_DIM
+    apply_gripper_scale: bool = False
 
     def __call__(self, data: dict) -> dict:
         if "actions" in data:
             actions = np.asarray(data["actions"])
             data["actions"] = actions[..., : self.action_dim].astype(np.float32)
-            if actions.shape[-1] == _BIMANUAL_ACTION_DIM:
+            if self.apply_gripper_scale and actions.shape[-1] == _BIMANUAL_ACTION_DIM:
                 for idx in _GRIPPER_INDICES_BIMANUAL:
                     if idx < data["actions"].shape[-1]:
                         data["actions"][..., idx] *= _GRIPPER_SCALE
