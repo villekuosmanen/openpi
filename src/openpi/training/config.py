@@ -11,22 +11,25 @@ from typing import Any, Literal, Protocol, TypeAlias
 import etils.epath as epath
 import flax.nnx as nnx
 import numpy as np
+import openpi.shared.nnx_utils as nnx_utils
 from typing_extensions import override
 import tyro
 
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
+import openpi.models.pi05_config as pi05_config
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.arx5_multitask_policy as arx5_multitask_policy
 import openpi.policies.bin_pack_policy as bin_pack_policy
+import openpi.policies.arx_policy as arx_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.libero_subtask_policy as libero_subtask_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
-import openpi.training.misc.polaris_config as polaris_config
-import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
@@ -130,7 +133,7 @@ class ModelTransformFactory(GroupFactory):
                     ],
                 )
             case _model.ModelType.PI05:
-                assert isinstance(model_config, pi0_config.Pi0Config)
+                # Support both Pi05Config and Pi0Config with pi05=True
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -167,6 +170,36 @@ class ModelTransformFactory(GroupFactory):
                         )
                     ],
                 )
+
+
+@dataclasses.dataclass(frozen=True)
+class SubtaskModelTransformFactory(GroupFactory):
+    """Creates model transforms for subtask-based hierarchical learning."""
+
+    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        match model_config.model_type:
+            case _model.ModelType.PI05:
+                # Use FAST tokens only if fast_token_loss_weight > 0
+                use_fast_tokens = getattr(model_config, "fast_token_loss_weight", 0.0) > 0
+
+                # Build tokenizer kwargs (with or without FAST tokenizer path)
+                tokenizer_kwargs = {"max_len": model_config.max_token_len}
+                if use_fast_tokens:
+                    fast_tokenizer_path = getattr(model_config, "fast_tokenizer_path", "physical-intelligence/fast")
+                    tokenizer_kwargs["fast_tokenizer_path"] = fast_tokenizer_path
+
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHighLowPrompt(
+                            _tokenizer.PaligemmaTokenizer(**tokenizer_kwargs),
+                            use_fast_tokens=use_fast_tokens,
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                )
+            case _:
+                raise ValueError(f"Subtask mode only supports PI05 model type, got {model_config.model_type}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -490,6 +523,81 @@ class LeRobotBinPackDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotARX5MultiTaskDataConfig(DataConfigFactory):
+    """Data config for multi-task training across ARX5 single-arm and bimanual datasets.
+
+    Handles mixed robot configs: single-arm (7-dim) padded to bimanual (14-dim)
+    with loss masking on padded dimensions. Agilex gripper values are rescaled
+    from centimeters to meters in the data transform.
+    """
+
+    default_prompt: str | None = "Do something useful"
+    use_delta_actions: bool = False
+    delta_action_mask: Sequence[bool] | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Resolve repo_id relative to assets_dirs so all assets live together.
+        if self.repo_id.endswith(".json") and not pathlib.Path(self.repo_id).is_absolute():
+            resolved = assets_dirs / pathlib.Path(self.repo_id).name
+            object.__setattr__(self, "repo_id", str(resolved))
+
+        data_transforms = _transforms.Group(
+            inputs=[arx5_multitask_policy.ARX5MultiTaskInputs()],
+            outputs=[arx5_multitask_policy.ARX5MultiTaskOutputs()],
+        )
+
+        if self.use_delta_actions:
+            delta_action_mask = self.delta_action_mask
+            if delta_action_mask is None:
+                # Delta joints, absolute grippers for bimanual: [J]*6 + [G] + [J]*6 + [G]
+                delta_action_mask = tuple([True] * 6 + [False] + [True] * 6 + [False])
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        base_config = self.create_base_config(assets_dirs, model_config)
+
+        # Patch norm stats: agilex gripper dims need stats divided by 100
+        # since the data transform rescales cm→m before normalization.
+        patched_norm_stats = base_config.norm_stats
+        if patched_norm_stats is not None:
+            patched_norm_stats = dict(patched_norm_stats)
+            for key in ("state", "actions"):
+                if key in patched_norm_stats:
+                    stats = patched_norm_stats[key]
+                    mean = np.array(stats.mean, copy=True)
+                    std = np.array(stats.std, copy=True)
+                    q01 = None if stats.q01 is None else np.array(stats.q01, copy=True)
+                    q99 = None if stats.q99 is None else np.array(stats.q99, copy=True)
+                    # The data transform divides gripper dims by 100 before
+                    # these stats are applied, so the stats must also reflect
+                    # the scaled values. Since norm stats are computed WITH
+                    # the data transform applied, this is only needed if stats
+                    # were computed without the transform. Adding as a safety
+                    # measure — TODO: verify after computing norm stats.
+                    patched_norm_stats[key] = _normalize.NormStats(
+                        mean=mean, std=std, q01=q01, q99=q99,
+                    )
+
+        use_per_timestep_action_norm = base_config.use_per_timestep_action_norm
+        if self.use_delta_actions and use_per_timestep_action_norm is None:
+            use_per_timestep_action_norm = True
+
+        return dataclasses.replace(
+            base_config,
+            norm_stats=patched_norm_stats,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # RoboCandyWrapper normalises action keys to "action" via key_rename_map
+            action_sequence_keys=("action",),
+            use_per_timestep_action_norm=use_per_timestep_action_norm,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -595,6 +703,51 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotLiberoSubtaskDataConfig(DataConfigFactory):
+    """
+    Data config for Libero environment with subtask support.
+    Assumes features stored as:
+      - images.agentview_rgb: image (3, 256, 256) uint8
+      - images.wrist_rgb: image (3, 256, 256) uint8
+      - state: float32, shape (8,)
+      - actions: float32, shape (horizon, 7)
+      - task: string (high-level task)
+      - subtask: string (low-level subtask)
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images.agentview_rgb": "images.agentview_rgb",
+                        # Map dataset wrist image name to the expected key.
+                        "images.wrist_rgb_left": "images.wrist_rgb",
+                        "state": "state",
+                        "actions": "actions",
+                        "task": "task",
+                        "subtask": "subtask",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[libero_subtask_policy.LiberoSubtaskInputs(model_type=model_config.model_type)],
+            outputs=[libero_subtask_policy.LiberoSubtaskOutputs()],
+        )
+
+        model_transforms = SubtaskModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -682,7 +835,7 @@ class TrainConfig:
         """Get the checkpoint directory for this config."""
         if not self.exp_name:
             raise ValueError("--exp_name must be set")
-        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        return (pathlib.Path(self.checkpoint_base_dir).expanduser() / self.name / self.exp_name).resolve()
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
@@ -696,7 +849,162 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
-    #
+    # ⭐ Libero Subtask Training Configurations - Three libero training modes
+    
+    # Mode 1: Subtask + Flow Matching (Original Pi05 style)
+    TrainConfig(
+        name="libero_pi05_subtask_flow",
+        exp_name="libero_pi05_subtask_flow",
+        model=pi05_config.Pi05Config(
+            action_horizon=10,
+            max_token_len=256,
+            discrete_state_input=False,
+            # ⭐ Only use subtask and flow matching loss
+            subtask_loss_weight=1.0,
+            fast_token_loss_weight=0.0,  # Disable FAST token loss
+            flow_matching_loss_weight=1.0,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        data=LeRobotLiberoSubtaskDataConfig(
+            repo_id="KeWangRobotics/libero_10_subtasks",
+            base_config=DataConfig(
+                asset_id="libero_subtask",
+                use_quantile_norm=True,  # ⭐ Use quantile normalization for gripper actions
+            ),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3000,
+            peak_lr=2.5e-5,
+            decay_steps=150_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=100_000,
+        save_interval=10000,
+        batch_size=32,
+        fsdp_devices=8,
+        ema_decay=0.999,
+        wandb_enabled=True,
+
+    ),
+    
+    # Mode 2: Subtask + FAST Token (Discrete action tokens)
+    TrainConfig(
+        name="libero_pi05_subtask_fast",
+        exp_name="libero_subtask_fast",
+        model=pi05_config.Pi05Config(
+            action_horizon=25,
+            max_token_len=256,
+            discrete_state_input=False,
+            # ⭐ Only use subtask and FAST token loss
+            subtask_loss_weight=10.0,
+            fast_token_loss_weight=1.0,  # Enable FAST token loss weight
+            flow_matching_loss_weight=0.0,  # Disable flow matching
+            fast_tokenizer_path="weights/fast",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        
+        data=LeRobotLiberoSubtaskDataConfig(
+            repo_id="KeWangRobotics/libero_10_subtasks",
+            base_config=DataConfig(
+                asset_id="libero_subtask",
+                use_quantile_norm=True,  # ⭐ Use quantile normalization for gripper actions
+            ),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3000,
+            peak_lr=2.5e-5,
+            decay_steps=150_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=20_000,
+        save_interval=4000,
+        batch_size=512,
+        fsdp_devices=8,
+        ema_decay=0.999,
+        wandb_enabled=True,
+    ),
+        
+    # Mode 3: Action Expert
+    TrainConfig(
+        name="libero_pi05_action_expert",
+        exp_name="libero_action_expert",
+        model=pi05_config.Pi05Config(
+            action_horizon=25,
+            max_token_len=256,
+            discrete_state_input=False,
+            # ⭐ Only use action expert loss
+            subtask_loss_weight=0.0,
+            fast_token_loss_weight=0.0,  
+            flow_matching_loss_weight=1.0,  # Enable flow matching
+            fast_tokenizer_path="weights/fast",
+            stop_gradient_flow_to_prefix=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/kewang/.cache/openpi/openpi-checkpoints/libero_pi05_subtask_fast/my_experiment/12000/params"
+        ),
+        
+        data=LeRobotLiberoSubtaskDataConfig(
+            repo_id="KeWangRobotics/libero_10_subtasks",
+            base_config=DataConfig(
+                asset_id="libero_subtask",
+                use_quantile_norm=True,  # ⭐ Use quantile normalization for gripper actions
+            ),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3000,
+            peak_lr=2.5e-5,
+            decay_steps=150_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=8_000,
+        save_interval=2000,
+        batch_size=512,
+        fsdp_devices=8,
+        ema_decay=0.999,
+        wandb_enabled=True,
+
+        freeze_filter=nnx.All(
+         nnx.Param,
+         nnx_utils.PathRegex(".*llm.*"),             # match all LLM layers
+         nnx.Not(nnx_utils.PathRegex(".*llm.*_1.*")) # exclude action expert branch
+     )
+    ),
+    
+    # Mode 3: Subtask + FAST + Flow (Hybrid - All three losses)
+    TrainConfig(
+        name="libero_pi05_subtask_hybrid",
+        exp_name="libero_subtask_hybrid",
+        model=pi05_config.Pi05Config(
+            action_horizon=20,
+            max_token_len=192,
+            discrete_state_input=False,
+            # ⭐ Use all three losses
+            subtask_loss_weight=0.15,
+            fast_token_loss_weight=0.15,  # Lower weight for FAST tokens
+            flow_matching_loss_weight=1.0,  # Lower weight for flow matching
+            fast_tokenizer_path="weights/fast",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        data=LeRobotLiberoSubtaskDataConfig(
+            repo_id="KeWangRobotics/libero_10_subtasks",
+            base_config=DataConfig(
+                asset_id="libero_subtask",
+                use_quantile_norm=True,  # ⭐ Use quantile normalization for gripper actions
+            ),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3000,
+            peak_lr=2.5e-5,
+            decay_steps=150_000,
+            decay_lr=2.5e-6,
+        ),
+        num_train_steps=40_000,
+        save_interval=5000,
+        batch_size=64,
+        fsdp_devices=1,
+        ema_decay=0.999,
+    ),
+
     # Inference Aloha configs.
     #
     TrainConfig(
@@ -928,7 +1236,7 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
     ),
     TrainConfig(
@@ -947,6 +1255,31 @@ _CONFIGS = [
                 "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.0, "
                 "villekuosmanen/dAgger_bin_pick_pack_coffee_capsules_1.5.1, "
                 "villekuosmanen/free_play_bin_pick_pack_coffee_capsules"
+                "]"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+            output_delta_actions=True,
+        ),
+        batch_size=36,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_bin_pack_coffee_capsules_delta_single_dataset",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
+        data=LeRobotBinPackDataConfig(
+            repo_id=(
+                "["
+                "villekuosmanen/bin_pick_pack_coffee_capsules"
                 "]"
             ),
             base_config=DataConfig(prompt_from_task=True),
@@ -1135,6 +1468,32 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
+    # ARX5 multi-task foundation model configs.
+    #
+    TrainConfig(
+        name="pi05_arx5_multitask_v1",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=50),
+        data=LeRobotARX5MultiTaskDataConfig(
+            # JSON listing 186 repo_ids; resolved against --assets-dir at runtime
+            repo_id="training_mix_v1.json",
+            base_config=DataConfig(prompt_from_task=True),
+            # TODO: enable delta actions once dim-mismatch handling is sorted
+            use_delta_actions=False,
+        ),
+        batch_size=36,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("weights/pi05_base/params"),
+        num_train_steps=100_000,
+        wandb_enabled=True,
+    ),
+    #
     # Debugging configs.
     #
     TrainConfig(
@@ -1169,9 +1528,6 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    # RoboArena & PolaRiS configs.
-    *roboarena_config.get_roboarena_configs(),
-    *polaris_config.get_polaris_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

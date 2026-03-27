@@ -6,7 +6,9 @@ weights
 third_party
 __pycache__
 .pytest_cache
+.worktrees
 .git
 .gitmodules
+wandb
 *.mp4
 *.safetensors

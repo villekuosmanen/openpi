@@ -5,7 +5,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --time=1-00:00:00
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=128G
+#SBATCH --mem=0G
+#SBATCH --exclusive
 #SBATCH --output=slurm-%j.out
 #SBATCH --error=slurm-%j.err
 #SBATCH --requeue
@@ -29,8 +30,8 @@ XDG_CACHE_HOME="${scratch_dir}/.cache"
 XDG_CONFIG_HOME="${scratch_dir}/.config"
 
 # Training config
-CONFIG_NAME="pi05_bin_pack_coffee_capsules_delta"
-EXP_NAME="10_datasets"
+CONFIG_NAME="pi05_bin_pack_coffee_capsules_delta_single_dataset"
+EXP_NAME="1_dataset"
 
 CHECKPOINT_DIR="${data_dir}/checkpoints/${CONFIG_NAME}/${EXP_NAME}"
 ASSETS_DIR="${CHECKPOINT_DIR}/assets"
@@ -71,7 +72,6 @@ EXPORT_VARS="${EXPORT_VARS} && export XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
 EXPORT_VARS="${EXPORT_VARS} && export WANDB_ENTITY=pravsels"
 EXPORT_VARS="${EXPORT_VARS} && export OPENPI_DATA_HOME=${data_dir}"
 EXPORT_VARS="${EXPORT_VARS} && export UV_PROJECT_ENVIRONMENT=${data_dir}/.venv"
-EXPORT_VARS="${EXPORT_VARS} && export CUDA_VISIBLE_DEVICES=0,1,2"
 
 if [ -f "${VALID_INDICES_PATH}" ]; then
     echo "Skipping valid-index precompute (found ${VALID_INDICES_PATH})."
@@ -95,7 +95,7 @@ echo "Command: ${TRAIN_CMD}"
 echo ""
 
 set +e
-srun --ntasks=1 --gpus-per-task=3 --cpu-bind=cores \
+srun --ntasks=1 --gpus-per-task=4 --cpu-bind=cores \
 apptainer exec --nv \
     --pwd "${repo_dir}" \
     --bind "${scratch_dir}:${scratch_dir}" \

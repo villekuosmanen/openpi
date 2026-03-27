@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures as futures
 import dataclasses
 import logging
+import pathlib
 from typing import Protocol
 
 from etils import epath
@@ -67,17 +68,17 @@ def save_state(
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
+    *,
+    assets_dir: epath.Path | str | None = None,
 ):
     def save_assets(directory: epath.Path):
-        # Save the normalization stats.
-        data_config = data_loader.data_config()
-        norm_stats = data_config.norm_stats
-        if norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save(directory / data_config.asset_id, norm_stats)
-        if data_config.per_timestep_action_norm_stats is not None and data_config.asset_id is not None:
-            _normalize.save_actions_per_timestep(
-                directory / data_config.asset_id, data_config.per_timestep_action_norm_stats
-            )
+        # Copy everything from the experiment-level assets dir into this
+        # checkpoint's assets dir so each checkpoint is self-contained for
+        # inference (e.g. valid_indices.txt, norm_stats.json, etc.).
+        if assets_dir is not None:
+            src_dir = epath.Path(assets_dir)
+            if src_dir.exists():
+                _copy_tree(src_dir, directory)
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():
@@ -113,9 +114,25 @@ def restore_state(
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
     norm_stats_dir = epath.Path(assets_dir) / asset_id
-    norm_stats = _normalize.load(norm_stats_dir)
-    logging.info(f"Loaded norm stats from {norm_stats_dir}")
-    return norm_stats
+    try:
+        norm_stats = _normalize.load(norm_stats_dir)
+        logging.info(f"Loaded norm stats from {norm_stats_dir}")
+        return norm_stats
+    except FileNotFoundError as exc:
+        assets_path = pathlib.Path(str(assets_dir))
+        candidates = list(assets_path.rglob("norm_stats.json"))
+        if len(candidates) == 1:
+            fallback_dir = candidates[0].parent
+            logging.warning(f"Norm stats not found at {norm_stats_dir}; using {fallback_dir}")
+            norm_stats = _normalize.load(fallback_dir)
+            logging.info(f"Loaded norm stats from {fallback_dir}")
+            return norm_stats
+        if candidates:
+            raise FileNotFoundError(
+                "Norm stats file not found at: "
+                f"{norm_stats_dir}. Found multiple candidates: {[str(p) for p in candidates]}"
+            ) from exc
+        raise
 
 
 class Callback(Protocol):
@@ -161,3 +178,16 @@ def _merge_params(train_state: training_utils.TrainState, params: dict[str, at.P
     if train_state.params:
         return dataclasses.replace(train_state, ema_params=params["params"])
     return dataclasses.replace(train_state, params=params["params"])
+
+
+def _copy_tree(src_dir: epath.Path, dst_dir: epath.Path) -> None:
+    """Recursively copy all files from *src_dir* into *dst_dir*."""
+    for entry in src_dir.iterdir():
+        if entry.is_file():
+            dst = dst_dir / entry.name
+            dst.write_text(entry.read_text())
+            logging.info("Copied %s -> %s", entry, dst)
+        elif entry.is_dir():
+            sub_dst = dst_dir / entry.name
+            sub_dst.mkdir(parents=True, exist_ok=True)
+            _copy_tree(entry, sub_dst)

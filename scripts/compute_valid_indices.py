@@ -14,10 +14,33 @@ import tyro
 
 from robocandywrapper.factory import make_dataset_without_config
 from robocandywrapper.plugins import EpisodeOutcomePlugin
-from rewact_tools import ControlModePlugin, PiStar0_6CumulativeRewardPlugin
+from rewact_tools import PiStar0_6CumulativeRewardPlugin
 
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
+
+# Use our patched ControlModePlugin that checks both legacy and new paths.
+from openpi.training.data_loader import ControlModePlugin
+
+
+def is_valid_frame(item: dict) -> bool:
+    """Return True if a frame should be included in training.
+
+    A frame is valid when it comes from a successful episode (episode_outcome == 1)
+    AND was human-controlled, not autonomous (control_mode_autonomous == 0).
+    """
+    return item["episode_outcome"] == 1 and item["control_mode_autonomous"] == 0
+
+
+def compute_valid_indices(dataset) -> list[int]:
+    """Iterate over *dataset* and return indices of frames that pass the filter."""
+    valid: list[int] = []
+    n = len(dataset)
+    for i in tqdm.tqdm(range(n), desc="Computing valid indices", total=n):
+        item = dataset[i]
+        if is_valid_frame(item):
+            valid.append(i)
+    return valid
 
 
 def main(
@@ -49,11 +72,7 @@ def main(
 
     n = len(dataset)
     logging.info("Computing valid indices over %d items (episode_outcome=1, control_mode_autonomous=0).", n)
-    valid: list[int] = []
-    for i in tqdm.tqdm(range(n), desc="Computing valid indices", total=n):
-        item = dataset[i]
-        if item["episode_outcome"] == 1 and item["control_mode_autonomous"] == 0:
-            valid.append(i)
+    valid = compute_valid_indices(dataset)
     logging.info("Computed %d valid indices (of %d total).", len(valid), n)
 
     output_dir = pathlib.Path(config.assets_dirs)

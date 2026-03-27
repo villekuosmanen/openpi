@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import dataclasses
 import logging
 import math
 import multiprocessing
@@ -19,8 +20,9 @@ except ModuleNotFoundError:
     import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
  
 from robocandywrapper.factory import make_dataset_without_config
-from robocandywrapper.plugins import EpisodeOutcomePlugin
-from rewact_tools import PiStar0_6CumulativeRewardPlugin, ControlModePlugin
+from robocandywrapper.plugins import EpisodeOutcomePlugin, ControlModePlugin
+from robocandywrapper.plugins.subtask import SubtaskPlugin
+from rewact_tools import PiStar0_6CumulativeRewardPlugin
 
 
 def _coerce_task_mapping(tasks) -> dict[int, str]:
@@ -153,6 +155,26 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+@dataclasses.dataclass(frozen=True)
+class _PromptFromSubtask(_transforms.DataTransformFn):
+    """Use the subtask description as the language prompt when available.
+
+    Falls back to the existing ``prompt`` key (typically from task-level
+    PromptFromLeRobotTask) if the subtask description is empty.
+    """
+
+    def __call__(self, data: _transforms.DataDict) -> _transforms.DataDict:
+        subtask = data.get("subtask", "")
+        if isinstance(subtask, (bytes, np.bytes_)):
+            subtask = subtask.decode("utf-8", errors="replace")
+        elif hasattr(subtask, "item"):
+            subtask = str(subtask.item())
+        subtask = str(subtask).strip()
+        if subtask:
+            data["prompt"] = np.asarray(subtask)
+        return data
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -163,32 +185,47 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    # Use RoboCandyWrapper for training on multiple datasets and to add extensions
+    # Support JSON file containing a list of repo_ids
+    if repo_id.endswith(".json") and pathlib.Path(repo_id).exists():
+        import json as _json
+        with open(repo_id) as f:
+            repo_id = _json.load(f)
+        logging.info(f"Loaded {len(repo_id)} repo_ids from file")
+
     dataset = make_dataset_without_config(
         repo_id,
         action_delta_indices=[t for t in range(action_horizon)],
-        plugins=[EpisodeOutcomePlugin(), ControlModePlugin(), PiStar0_6CumulativeRewardPlugin(normalise=True)],
+        plugins=[
+            EpisodeOutcomePlugin(),
+            ControlModePlugin(),
+            SubtaskPlugin(),
+        ],
         key_rename_map={
-            # 'action.pos': 'action',
-            # 'observation.state.pos': 'observation.state',
+            'action.pos': 'action',
+            'observation.state.pos': 'observation.state',
+            'observation.images.cam_high': 'observation.images.front',
+            'observation.images.cam_left_wrist': 'observation.images.left_wrist',
+            'observation.images.cam_right_wrist': 'observation.images.right_wrist',
+            'observation.images.wrist': 'observation.images.left_wrist',
         },
+        pad_to_max_dim=True,
+        fill_missing_images="disable",
     )
     dataset_meta = dataset.meta
 
-    # dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
-    # dataset = lerobot_dataset.LeRobotDataset(
-    #     data_config.repo_id,
-    #     delta_timestamps={
-    #         key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-    #     },
-    # )
+    transforms = []
 
     if data_config.prompt_from_task:
         task_mapping = _coerce_task_mapping(dataset_meta.tasks)
         if task_mapping:
-            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(task_mapping)])
+            transforms.append(_transforms.PromptFromLeRobotTask(task_mapping))
         else:
             logging.warning("prompt_from_task=True but dataset task mapping is empty; skipping PromptFromLeRobotTask.")
+
+    transforms.append(_PromptFromSubtask())
+
+    if transforms:
+        dataset = TransformedDataset(dataset, transforms)
 
     return dataset
 

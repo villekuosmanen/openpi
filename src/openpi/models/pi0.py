@@ -206,22 +206,29 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        (_prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        # Per-timestep MSE loss averaged over action dimension.
-        per_step_loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        per_step_sq = jnp.square(v_t - u_t)  # [*b, ah, ad]
+
+        # Mask padded action dimensions (e.g. right arm for single-arm data)
+        if observation.action_dim_mask is not None:
+            dim_mask = observation.action_dim_mask  # [*b, ad] or [ad]
+            if dim_mask.ndim < per_step_sq.ndim:
+                dim_mask = dim_mask[..., None, :]  # broadcast over ah
+            num_real_dims = jnp.clip(dim_mask.sum(axis=-1, keepdims=True), 1)
+            per_step_sq = per_step_sq * dim_mask
+            per_step_loss = per_step_sq.sum(axis=-1) / num_real_dims.squeeze(-1)
+        else:
+            per_step_loss = jnp.mean(per_step_sq, axis=-1)
 
         # Mask out padded actions at episode boundaries so the model doesn't
         # learn to predict the repeated last action (which causes freezing).
         if observation.action_is_pad is not None:
-            # mask is 1 for real actions, 0 for padded actions.
             mask = ~observation.action_is_pad
             per_step_loss = per_step_loss * mask
-            # Rescale so that the downstream mean() produces the correct average over
-            # real steps only, not over all steps including the zeroed-out ones.
             num_real = jnp.clip(mask.sum(axis=-1, keepdims=True), 1)
             per_step_loss = per_step_loss * (mask.shape[-1] / num_real)
 
@@ -285,7 +292,7 @@ class Pi0(_model.BaseModel):
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _x_t, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 

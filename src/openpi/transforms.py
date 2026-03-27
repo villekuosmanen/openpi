@@ -327,6 +327,62 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizeHighPrompt(DataTransformFn):
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    discrete_state_input: bool = False
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+        # print(f"tokenize high prompt: {prompt}")
+        tokens, token_masks = self.tokenizer.tokenize_high_level_prompt(prompt)
+        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
+
+
+@dataclasses.dataclass(frozen=True)
+class TokenizeHighLowPrompt(DataTransformFn):
+    """Tokenize high-level task and low-level subtask for hierarchical learning."""
+
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    use_fast_tokens: bool = False  # ⭐ 新增:是否使用 FAST tokens
+
+    def __call__(self, data: DataDict) -> DataDict:
+        high_prompt = data.pop("high_prompt", None)
+        low_prompt = data.pop("low_prompt", None)
+
+        if high_prompt is None or low_prompt is None:
+            raise ValueError("Both high_prompt and low_prompt are required for TokenizeHighLowPrompt")
+
+        if not isinstance(high_prompt, str):
+            high_prompt = high_prompt.item()
+        if not isinstance(low_prompt, str):
+            low_prompt = low_prompt.item()
+
+        state = data.get("state")
+        if state is None:
+            raise ValueError("State is required for TokenizeHighLowPrompt")
+
+        # ⭐ Decide whether to pass actions based on the config
+        actions = data.get("actions") if self.use_fast_tokens else None
+
+        tokens, token_masks, ar_mask, loss_mask, subtask_region_mask, action_region_mask = (
+            self.tokenizer.tokenize_high_low_prompt(high_prompt, low_prompt, state, actions)
+        )
+        return {
+            **data,
+            "tokenized_prompt": tokens,
+            "tokenized_prompt_mask": token_masks,
+            "token_ar_mask": ar_mask,
+            "token_loss_mask": loss_mask,
+            "subtask_region_mask": subtask_region_mask,  # ⭐ 新增
+            "action_region_mask": action_region_mask,  # ⭐ 新增
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 
@@ -386,14 +442,49 @@ class PromptFromLeRobotTask(DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class PadStatesAndActions(DataTransformFn):
-    """Zero-pads states and actions to the model action dimension."""
+    """Zero-pads states and actions to the model action dimension.
+
+    Also produces ``action_dim_mask`` (bool, shape ``[ad]``) when the original
+    action dimension is smaller than ``model_action_dim``.  The mask is True
+    for real dimensions and False for the padded ones so the training loss can
+    ignore predictions on non-existent arm joints.
+    """
 
     model_action_dim: int
 
     def __call__(self, data: DataDict) -> DataDict:
+        orig_action_dim = data["state"].shape[-1]
         data["state"] = pad_to_dim(data["state"], self.model_action_dim, axis=-1)
         if "actions" in data:
             data["actions"] = pad_to_dim(data["actions"], self.model_action_dim, axis=-1)
+        if orig_action_dim < self.model_action_dim:
+            mask = np.zeros(self.model_action_dim, dtype=bool)
+            mask[:orig_action_dim] = True
+            data["action_dim_mask"] = mask
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class AgilexGripperScale(DataTransformFn):
+    """Rescale agilex gripper values from centimeters to meters.
+
+    Agilex bimanual datasets store gripper state/action at indices [6] and [13]
+    in centimeters while other datasets use meters. This divides those dims by
+    100 to unify the scale before normalization.
+    """
+
+    gripper_indices: tuple[int, ...] = (6, 13)
+    scale_factor: float = 100.0
+
+    def __call__(self, data: DataDict) -> DataDict:
+        for key in ("state", "actions"):
+            if key not in data:
+                continue
+            arr = np.array(data[key], copy=True, dtype=np.float32)
+            for idx in self.gripper_indices:
+                if idx < arr.shape[-1]:
+                    arr[..., idx] /= self.scale_factor
+            data[key] = arr
         return data
 
 
